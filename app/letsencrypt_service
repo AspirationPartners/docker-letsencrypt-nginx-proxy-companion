@@ -2,7 +2,7 @@
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-seconds_to_wait=3600
+seconds_to_wait="${RENEW_WAIT_TIME:-3600}"
 ACME_CA_URI="${ACME_CA_URI:-https://acme-v01.api.letsencrypt.org/directory}"
 ACME_TOS_HASH="${ACME_TOS_HASH:-6373439b9f29d67a5cd4d18cbc7f264809342dbf21cb2ba2fc7588df987a6221}"
 
@@ -11,6 +11,8 @@ source /app/functions.sh
 create_link() {
     local readonly target=${1?missing target argument}
     local readonly source=${2?missing source argument}
+    echo $target
+    echo $source
     [[ -f "$target" ]] && return 1
     ln -sf "$source" "$target"
 }
@@ -19,14 +21,15 @@ create_links() {
     local readonly base_domain=${1?missing base_domain argument}
     local readonly domain=${2?missing base_domain argument}
 
-    if [[ ! -f "/etc/nginx/certs/$base_domain"/fullchain.pem || \
-          ! -f "/etc/nginx/certs/$base_domain"/key.pem ]]; then
+    if [[ ! -f "/etc/nginx/certs/$base_domain/.lego/certificates/$base_domain".pem || \
+          ! -f "/etc/nginx/certs/$base_domain/.lego/certificates/$base_domain".key ]]; then
+        echo "returning 1"
         return 1
     fi
     local return_code=1
-    create_link "/etc/nginx/certs/$domain".crt "./$base_domain"/fullchain.pem
+    create_link "/etc/nginx/certs/$domain".crt "/etc/nginx/certs/$base_domain/.lego/certificates/$base_domain".pem
     return_code=$(( $return_code & $? ))
-    create_link "/etc/nginx/certs/$domain".key "./$base_domain"/key.pem
+    create_link "/etc/nginx/certs/$domain".key "/etc/nginx/certs/$base_domain/.lego/certificates/$base_domain".key
     return_code=$(( $return_code & $? ))
     if [[ -f "/etc/nginx/certs/dhparam.pem" ]]; then
         create_link "/etc/nginx/certs/$domain".dhparam.pem ./dhparam.pem
@@ -61,7 +64,7 @@ update_certs() {
         fi
 
         params_d_str=""
-        [[ $DEBUG == true ]] && params_d_str+=" -v"
+        [[ $DEBUG == true ]] && params_d_str+=" "
 
         hosts_array_expanded=("${!hosts_array}")
         # First domain will be our base domain
@@ -96,19 +99,22 @@ update_certs() {
 
         for domain in "${!hosts_array}"; do
             # Add all the domains to certificate
-            params_d_str+=" -d $domain"
+            params_d_str+=" --domains=$domain "
             # Add location configuration for the domain
             add_location_configuration "$domain" || reload_nginx
         done
 
         echo "Creating/renewal $base_domain certificates... (${hosts_array_expanded[*]})"
-        /usr/bin/simp_le \
-            -f account_key.json -f key.pem -f chain.pem -f fullchain.pem -f cert.pem \
-            --tos_sha256 $ACME_TOS_HASH \
+        echo $params_d_str
+
+        /go/bin/lego \
+            --pem \
+            --accept-tos \
+            --server="$acme_ca_uri" \
+            --email="pbrown@aspiration.com" \
+            --dns=route53 \
             $params_d_str \
-            --email "${!email_varname}" \
-            --server=$acme_ca_uri \
-            --default_root /usr/share/nginx/html/
+            run
 
         simp_le_return=$?
 
